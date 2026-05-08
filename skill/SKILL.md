@@ -1,6 +1,6 @@
 ---
 name: perf-harness
-description: Use this skill when the user wants to find and fix performance bottlenecks in a CLI tool or HTTP API by running real benchmarks under load, profiling to identify hotspots, proposing code changes, and verifying speedups against the same workload. Triggers include "make this faster", "find the bottleneck", "optimize this endpoint", "why is X slow", "this CLI takes too long", and any request pairing a runnable target with a desire for measured speedups. Do NOT use for: refactoring requests with no perf criteria, abstract algorithm questions, or optimizing LLM inference itself.
+description: Use this skill when the user wants to find and fix performance bottlenecks in a CLI tool, HTTP API, browser app, or specific function by running real benchmarks under load, profiling to identify hotspots, proposing code changes, and verifying speedups against the same workload. Triggers include "make this faster", "find the bottleneck", "optimize this endpoint", "why is X slow", "this CLI takes too long", and any request pairing a runnable target with a desire for measured speedups.
 ---
 
 # Performance Harness
@@ -10,11 +10,14 @@ Profile-guided optimization loop: **measure → locate → hypothesize → patch
 ## Required tools
 
 Check availability before starting; ask the user before installing anything globally.
+
 - `hyperfine` — statistical CLI benchmarking
-- `strace` (Linux) / `dtruss` (macOS) — syscall profiling
-- `py-spy` — Python sampling profiler
-- `samply` — cross-platform sampling profiler for native binaries
+- Sampling profiler appropriate to the runtime:
+  - Python: `py-spy`; native binaries: `samply`
+  - Node / Bun: `node --cpu-prof` (built-in), `clinic flame`, `0x`, or `bun --inspect`
+  - Browser: Chrome DevTools Performance panel; headless via `puppeteer` + `Page.profiler`
 - `locust` — HTTP load testing
+- `strace` (Linux) / `dtruss` (macOS) — syscall summary, only useful for I/O-bound CLIs
 
 ## Step 1 — Classify the target
 
@@ -22,13 +25,16 @@ Pick one mode. Ask only if genuinely ambiguous.
 
 - **CLI mode** — executable invoked with args, exits.
 - **API mode** — long-running HTTP service.
-- **Function mode** (fallback) — user pointed at a specific function with no runnable target. Switch to function-level workflow: build a replay test from real inputs, then optimize against that.
+- **Browser mode** — code runs in a user's browser. Profile with DevTools or headless puppeteer; `hyperfine`-the-binary won't apply.
+- **Function mode** — a specific function with no runnable target around it. Build a replay test from real inputs, run in-process with `performance.now()` / `time.perf_counter()`, n ≥ 30. Use this fallback whenever the runnable target is dominated by startup overhead (loader, JIT warmup) — otherwise you'll be optimizing the harness, not the code.
 
 Also establish, in this turn, before any code runs:
-1. A **representative workload**. For CLI: a real input, not a toy. Ask if not provided. For API: which endpoints, at what mix.
-2. A **success criterion**. Default: ≥10% p50 improvement, p95 not regressing, all tests passing. Confirm with user.
 
-State both back to the user explicitly before proceeding.
+1. **Where the code actually runs in production.** Browser? Node server? CLI on a developer's laptop? A library used in two of those? Read the README/CONTEXT/package.json. A patch that helps Node but degrades the browser (or vice versa) is a regression, not a fix — and you cannot tell which is which without naming the deployment target up front.
+2. A **representative workload**. CLI: a real input, not a toy. API: which endpoints, at what mix. Browser: which user interaction.
+3. A **success criterion**. Default: ≥10% p50 improvement, p95 not regressing, all tests passing.
+
+State all three back to the user explicitly before proceeding.
 
 ## Step 2 — Baseline (mandatory; never skip)
 
@@ -49,39 +55,39 @@ locust -f locustfile.py --headless \
   --host http://localhost:PORT \
   --csv baseline
 ```
-Read `baseline_stats.csv` and `baseline_failures.csv`. **Identify the worst offender by p95, not mean.** Mean hides tail latency.
+Read `baseline_stats.csv` and `baseline_failures.csv`. Identify the worst offender by p95, not mean.
 
-Save baseline artifacts to `./perf/baseline/`. Do not modify them later.
+### Function / Browser
+In-process timer around the captured workload, n ≥ 30, first 3 iterations discarded. Save per-iteration timings as JSON in hyperfine's shape (`{"results":[{"times":[...]}]}`) so the same `compare.py` works.
+
+**Noise check:** if σ/p50 > 5% on the baseline, raise n to 50+ before relying on the Step 5 gates — short workloads with GC/JIT noise will not produce stable verdicts at n=20.
+
+Save baseline artifacts to `./perf/baseline/`.
 
 ## Step 3 — Profile the hotspot
 
 The benchmark says *what* is slow. A profile says *why*. You need both before patching.
 
-### CLI
-- **Always run a syscall summary first** — cheap, often decisive:
-  ```bash
-  strace -c -o syscalls.txt <command>   # Linux
-  dtruss -c <command> 2> syscalls.txt   # macOS
-  ```
-  Look for: unexpected call counts (10k `stat`s when ~10 expected), time concentrated in `read`/`openat` (I/O-bound, not CPU-bound — changes the entire optimization strategy).
-- **Sampling profile for CPU-bound work:**
-  - Python: `py-spy record -o profile.svg -- python script.py`
-  - Native: `samply record <command>`
-  - Identify top 1–3 functions by **self-time**, not total time.
+Lead with a sampling profile of the hot path. The right tool depends on runtime:
 
-### API
-While Locust is running, attach a profiler to the server process:
-- Python: `py-spy record --pid <pid> --duration 60 -o api.svg`
-- Node.js: `clinic flame -- node app.js` or `0x`
-- Native: `samply record -p <pid>`
+- **Python**: `py-spy record -o profile.svg -- python script.py`
+- **Native**: `samply record <command>`
+- **Node / Bun**: `node --cpu-prof --cpu-prof-dir=./perf/cpuprof <entry>` produces a `.cpuprofile` (open in Chrome DevTools, or parse the JSON's `nodes`/`samples`/`timeDeltas` for top self-time). Bun: `bun --inspect <entry>`.
+- **Browser**: DevTools Performance → record a real interaction → Bottom-Up by self-time.
+- **API**: attach to the running server while load is in flight: `py-spy record --pid`, `clinic flame -- node app.js`, or `samply record -p <pid>`.
 
-Cross-check: the function flagged by the flame graph should be on the call path of the slow endpoint from Step 2. If it isn't, you are profiling the wrong thing.
+Identify top 1–3 functions by **self-time**, not total time. Cross-check that they sit on the call path from Step 2's workload.
+
+**Gotcha for short Node CLIs:** if the profile is dominated by `makeSyncRequest`, `compileSourceTextModule`, `wrapSafe`, or `tsx`/`ts-node` frames, you are seeing the loader, not your code. Switch to function mode (Step 1) so the benchmark excludes startup.
+
+Optional: for I/O-bound CLIs on Linux/macOS, add a syscall summary (`strace -c` / `dtruss -c`). Skip on Windows; skip for compute-bound code.
 
 ## Step 4 — Hypothesize and patch
 
-State the hypothesis in plain English **before** writing code: "Function X is slow because Y; I will change Z, expecting A% improvement." If it is a guess, say so.
+State the hypothesis in plain English **before** writing code: "Function X is slow because Y; I will change Z, expecting A% improvement."
 
-Common patterns to consider, in rough order of frequency:
+Common patterns, in rough order of frequency:
+
 - Repeated work inside a hot loop → cache / hoist / memoize
 - N+1 queries → batch / join / prefetch
 - Sync I/O on hot path → async / batch / move off-path
@@ -90,70 +96,55 @@ Common patterns to consider, in rough order of frequency:
 - Excessive allocations → reuse buffers, switch to iterators / generators
 - Wrong algorithm (O(n²) where O(n log n) exists) → swap
 
-Apply the **smallest** patch that tests the hypothesis. Run the existing test suite first; abort if anything fails.
+Apply the **smallest** patch that tests the hypothesis. Run tests first; abort on failure.
+
+If the patch is runtime-conditional (e.g., swap a JS dep for a native binding in Node only, keep the original in the browser), the deployment-target answer from Step 1 decides which path matters. A "Node-only" speedup in a browser-first project is a misfire.
 
 ## Step 5 — Verify (hard gates)
 
-Re-run the **exact** Step 2 benchmark. Same workload, same hardware, same warm-up. Save to `./perf/run-N/`.
+Re-run the **exact** Step 2 benchmark. Same workload, same hardware, same warm-up. Save to `./perf/run-N/`. Prefer interleaved A/B over sequential separate runs — system noise leaks across longer time gaps:
 
 ```bash
-# CLI direct comparison:
 hyperfine --warmup 3 --runs 20 \
+  --export-json compare.json \
   --export-markdown comparison.md \
   '<git stash; original command; git stash pop>' \
   '<optimized command>'
 ```
 
 Three gates, ALL must pass:
-1. **Tests pass.** Hard fail → revert.
-2. **Improvement exceeds noise.** p50 drops ≥10% AND the delta is larger than 2× the pooled stdev. Otherwise reject.
-3. **No regression elsewhere.** CLI: warm/cold both improved or held? API: other endpoints unchanged?
 
-If accepted: report numerically — `"p50 412ms → 287ms, 1.43× faster, n=20, σ=4ms"`. If rejected: revert, append to `./perf/attempted.md` with what was tried and why it failed, and either form a new hypothesis or report back.
+1. **Tests pass.** Hard fail → revert.
+2. **Improvement exceeds noise.** p50 drops ≥10% AND |Δ| > 2× pooled stddev.
+3. **No regression elsewhere.** CLI: warm/cold both held? API: other endpoints unchanged? Library used in browser AND Node: both runtimes verified.
+
+If accepted: report numerically — `"p50 412ms → 287ms, 1.43× faster, n=20, σ=4ms"`. If rejected: revert, append to `./perf/attempted.md`, form a new hypothesis or report back.
 
 ## Step 6 — Loop until diminishing returns
 
 After each accepted patch, re-profile (Step 3). The bottleneck moves. Stop when any of:
+
 - Success criterion from Step 1 is met
 - Three consecutive hypotheses fail to produce an accepted patch
 - Remaining hotspots are in third-party code you cannot modify
 
-End with a summary: baseline → final numbers, accepted patches with individual contributions, rejected hypotheses with reasons.
+End with: baseline → final numbers, accepted patches with individual contributions, rejected hypotheses with reasons.
 
 ## Inviolable rules
 
-- **No speedup claim without a re-run on the same workload.** LLMs routinely produce code that looks faster but isn't. The benchmark is the only signal.
-- **Do not modify the benchmark to make the patch look better.** Same workload, hardware, warm-up.
-- **One change per benchmark cycle.** Stacking changes makes attribution impossible.
-- **Tests are non-negotiable.** A 5× speedup that breaks a test is a regression.
-- **If no test suite exists, generate replay tests from real inputs before touching code.** Capture inputs to the target function during a real run, replay them as assertions.
-- **Do not optimize blind.** If Step 2 or Step 3 was skipped, stop and run them.
+- No speedup claim without a re-run on the same workload.
+- Do not modify the benchmark to make the patch look better.
+- One change per benchmark cycle.
+- Tests pass, or revert.
+- If no test suite exists, generate replay tests from captured real inputs before patching.
+- Do not optimize blind: never skip Step 2 or Step 3.
 
 ## Supporting files (agent should create on first use)
 
 - `scripts/baseline-cli.sh` — wraps Step 2 CLI invocation
 - `scripts/baseline-api.sh` — wraps Step 2 Locust invocation
-- `scripts/compare.py` — diffs two hyperfine JSON files with stdev-aware significance check
-- `templates/locustfile.py` — starter for API workloads (see below)
+- `scripts/baseline-fn.sh` — wraps Step 2 function-mode replay (in-process timer, JSON out)
+- `scripts/compare.py` — diffs hyperfine JSON files (sequential or single-file two-result) with stdev-aware significance check
+- `scripts/analyze-cpuprof.mjs` — top self-time frames from a Node `.cpuprofile`
+- `templates/locustfile.py` — starter for API workloads (weighted `@task` per endpoint; weights mirror real traffic, ask the user if unknown)
 - `templates/replay-test.py` — generates pytest from captured function inputs
-
-### `templates/locustfile.py` (starter)
-```python
-from locust import HttpUser, task, between
-
-class WorkloadUser(HttpUser):
-    wait_time = between(0.5, 2.0)
-
-    @task(10)  # weight = relative frequency
-    def hot_endpoint(self):
-        self.client.get("/api/most-called")
-
-    @task(3)
-    def warm_endpoint(self):
-        self.client.post("/api/sometimes-called", json={"k": "v"})
-
-    @task(1)
-    def cold_endpoint(self):
-        self.client.get("/api/rarely-called")
-```
-Weights should mirror real traffic. If unknown, ask the user; do not invent a distribution.
