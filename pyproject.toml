@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perf-harness"
+version = "0.1.0"
+description = "Profile-guided optimization skill for Claude Code, with a tiny scaffolding CLI."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "perf-harness contributors" }]
+keywords = ["claude-code", "performance", "profiling", "benchmarking", "skill"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+api = ["locust>=2.20"]
+profile = ["py-spy>=0.3"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+perf-harness = "perf_harness.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/derneuere/perf-harness"
+Issues = "https://github.com/derneuere/perf-harness/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

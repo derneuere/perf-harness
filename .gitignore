@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.tox/
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# perf-harness scaffolding output (generated in user projects, not this repo)
+perf/baseline/
+perf/runs/
+perf/attempted.md
+
+# locust artifacts
+*_stats.csv
+*_failures.csv
+*_stats_history.csv
+*_exceptions.csv
+locust.log
+
+# profiler output
+*.svg
+profile.json
+syscalls.txt
