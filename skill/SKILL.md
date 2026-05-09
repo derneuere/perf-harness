@@ -17,7 +17,6 @@ Check availability before starting; ask the user before installing anything glob
   - Node / Bun: `node --cpu-prof` (built-in), `clinic flame`, `0x`, or `bun --inspect`
   - Browser: Chrome DevTools Performance panel; headless via `puppeteer` + `Page.profiler`
 - `locust` — HTTP load testing
-- `strace` (Linux) / `dtruss` (macOS) — syscall summary, only useful for I/O-bound CLIs
 
 ## Step 1 — Classify the target
 
@@ -27,6 +26,8 @@ Pick one mode. Ask only if genuinely ambiguous.
 - **API mode** — long-running HTTP service.
 - **Browser mode** — code runs in a user's browser. Profile with DevTools or headless puppeteer; `hyperfine`-the-binary won't apply.
 - **Function mode** — a specific function with no runnable target around it. Build a replay test from real inputs, run in-process with `performance.now()` / `time.perf_counter()`, n ≥ 30. Use this fallback whenever the runnable target is dominated by startup overhead (loader, JIT warmup) — otherwise you'll be optimizing the harness, not the code.
+
+For SPAs talking to a backend (React/Vue/Svelte + REST/GraphQL/RPC), time *both* the API and the browser-perceived latency: the ratio tells you whether you're network-bound (≈1:1) or render-bound (API ≪ browser).
 
 Also establish, in this turn, before any code runs:
 
@@ -58,7 +59,14 @@ locust -f locustfile.py --headless \
 Read `baseline_stats.csv` and `baseline_failures.csv`. Identify the worst offender by p95, not mean.
 
 ### Function / Browser
-In-process timer around the captured workload, n ≥ 30, first 3 iterations discarded. Save per-iteration timings as JSON in hyperfine's shape (`{"results":[{"times":[...]}]}`) so the same `compare.py` works.
+In-process timer around the captured workload, n ≥ 30 (≥ 25 with ≥ 5 warmup discarded for browser benches — cold V8/Chrome warmup is meaningful). Save per-iteration timings as JSON in hyperfine's shape (`{"results":[{"times":[...]}]}`) so the same `compare.py` works.
+
+For frameworks with a development mode (Vite / Next / CRA / SvelteKit), bench the production build, not the dev server — DEV-mode runtime checks can inflate timings 30%+.
+
+**Browser-mode iteration hygiene.** Three sources of false readings to watch for:
+- Query-cache poisoning (TanStack Query / SWR / Apollo / RTK Query) — invalidate between iterations, otherwise only iteration 1 measures real work.
+- Auth-restore race — for SPAs that fire data hooks before auth rehydrates, log in then reload before starting.
+- Auto-cancelled in-flight requests — wait for `networkidle` between iterations; some SDKs (PocketBase, Apollo) return 204 on duplicate-in-flight aborts.
 
 **Noise check:** if σ/p50 > 5% on the baseline, raise n to 50+ before relying on the Step 5 gates — short workloads with GC/JIT noise will not produce stable verdicts at n=20.
 
@@ -78,9 +86,7 @@ Lead with a sampling profile of the hot path. The right tool depends on runtime:
 
 Identify top 1–3 functions by **self-time**, not total time. Cross-check that they sit on the call path from Step 2's workload.
 
-**Gotcha for short Node CLIs:** if the profile is dominated by `makeSyncRequest`, `compileSourceTextModule`, `wrapSafe`, or `tsx`/`ts-node` frames, you are seeing the loader, not your code. Switch to function mode (Step 1) so the benchmark excludes startup.
-
-Optional: for I/O-bound CLIs on Linux/macOS, add a syscall summary (`strace -c` / `dtruss -c`). Skip on Windows; skip for compute-bound code.
+**Loader noise** in short Node CLIs: top frames like `makeSyncRequest`, `compileSourceTextModule`, `tsx`/`ts-node` mean you're profiling the loader; switch to function mode (Step 1). Bun handles TS natively so this rarely applies there.
 
 ## Step 4 — Hypothesize and patch
 
@@ -145,6 +151,6 @@ End with: baseline → final numbers, accepted patches with individual contribut
 - `scripts/baseline-api.sh` — wraps Step 2 Locust invocation
 - `scripts/baseline-fn.sh` — wraps Step 2 function-mode replay (in-process timer, JSON out)
 - `scripts/compare.py` — diffs hyperfine JSON files (sequential or single-file two-result) with stdev-aware significance check
-- `scripts/analyze-cpuprof.mjs` — top self-time frames from a Node `.cpuprofile`
+- `scripts/analyze-cpuprof.mjs` — top self-time frames from a Node / DevTools `.cpuprofile`
 - `templates/locustfile.py` — starter for API workloads (weighted `@task` per endpoint; weights mirror real traffic, ask the user if unknown)
 - `templates/replay-test.py` — generates pytest from captured function inputs

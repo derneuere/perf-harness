@@ -12,6 +12,7 @@ scripts/
   baseline-cli.sh       # hyperfine wrapper for Step 2 (CLI mode)
   baseline-api.sh       # locust wrapper for Step 2 (API mode)
   compare.py            # diffs two hyperfine JSONs with stdev-aware significance check
+  analyze-cpuprof.mjs   # top self-time frames from a Node / DevTools .cpuprofile
 templates/
   locustfile.py         # starter for API workloads
   replay-test.py        # record/replay scaffolding for function-mode optimization
@@ -55,6 +56,7 @@ perf-harness init           # scaffold ./perf, ./scripts, .claude/skills/perf-ha
 scripts/baseline-cli.sh                # ready to run
 scripts/baseline-api.sh
 scripts/compare.py
+scripts/analyze-cpuprof.mjs
 perf/
   baseline/                            # Step 2 artifacts go here
   runs/                                # run-1/, run-2/, … from Step 5

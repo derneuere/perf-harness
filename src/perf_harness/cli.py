@@ -12,6 +12,7 @@ _SCAFFOLD = [
     ("scripts/baseline-cli.sh", "scripts/baseline-cli.sh", 0o755),
     ("scripts/baseline-api.sh", "scripts/baseline-api.sh", 0o755),
     ("scripts/compare.py", "scripts/compare.py", 0o755),
+    ("scripts/analyze-cpuprof.mjs", "scripts/analyze-cpuprof.mjs", 0o755),
     ("templates/locustfile.py", "perf/locustfile.py", 0o644),
     ("templates/replay-test.py", "perf/replay-test.py", 0o644),
     ("skill/SKILL.md", ".claude/skills/perf-harness/SKILL.md", 0o644),
